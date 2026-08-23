@@ -1,5 +1,5 @@
 {
-  "name": "@easleyowl/cf-genai-auth",
+  "name": "@agilesyndrome/cf-genai-auth",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
