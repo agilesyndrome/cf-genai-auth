@@ -17,3 +17,10 @@ export default createWorker({ auth: auth.handle, fetch: router });
 The standard cookie is host-only and `Secure`; use a distinct `cookiePrefix`
 when multiple environments share a browser. Authorization, admin roles, and
 site-specific user records remain application concerns.
+
+## Authorization
+
+Pass `authorize({ request, url, user, env })` to `createAuth` when a site needs
+role or route-level access control. Return `true` to continue or `false` for a
+403 response. Keep the policy in the site initializer; the library does not
+assume how roles are stored.

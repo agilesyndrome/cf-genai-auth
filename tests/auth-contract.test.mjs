@@ -60,3 +60,9 @@ test("login uses provider discovery and PKCE", async () => {
 test("rejects unsafe cookie prefixes", () => {
   assert.throws(() => createAuth({ cookiePrefix: "bad; Domain=evil.example" }), /cookiePrefix/);
 });
+
+test("authorize hook can restrict an authenticated route", async () => {
+  const auth = createAuth({ publicPaths: ["/"], authorize: ({ user }) => user.email === "admin@example.com" });
+  const response = await auth.handle(request("/admin"), env);
+  assert.equal(response.status, 302);
+});

@@ -30,6 +30,9 @@ export function createAuth(options = {}) {
       if (!protectedPath(url.pathname) || publicPaths.some((path) => path === "/" ? url.pathname === "/" : url.pathname.startsWith(path))) return null;
       if (isMutation(request)) { const originResponse = checkOrigin(request, options.allowedOrigins); if (originResponse) return originResponse; }
       const user = await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session);
+      if (user && options.authorize && !(await options.authorize({ request, url, user, env }))) {
+        return url.pathname.startsWith("/api/") ? Response.json({ error: "Administrator access is required." }, { status: 403, headers: { "Cache-Control": "no-store" } }) : authError("Administrator access is required.", 403);
+      }
       if (user) return null;
       if (url.pathname.startsWith("/api/")) return Response.json({ error: "Authentication is required." }, { status: 401, headers: { "Cache-Control": "no-store" } });
       return Response.redirect(`${url.origin}/auth/login?return_to=${encodeURIComponent(safeReturnTo(url.pathname + url.search))}`, 302);
