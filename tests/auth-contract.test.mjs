@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createAuth } from "../src/index.js";
 
 const env = {
-  OIDC_ISSUER: "https://issuer.example/",
+  OIDC_DISCOVERY_URL: "https://issuer.example/.well-known/openid-configuration",
   OIDC_CLIENT_ID: "client-id",
   OIDC_CLIENT_SECRET: "client-secret",
   AUTH_SESSION_SECRET: "a-secret-at-least-32-bytes-long",

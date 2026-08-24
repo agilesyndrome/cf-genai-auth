@@ -5,8 +5,11 @@ Shared Cloudflare Worker OIDC authentication. It provides `/auth/login`,
 uses Authorization Code + PKCE, verifies RS256 ID tokens against the provider's
 JWKS, and stores only a short-lived signed session cookie in the browser.
 
-Required Worker vars/secrets are `OIDC_ISSUER`, `OIDC_CLIENT_ID`,
-`OIDC_CLIENT_SECRET`, and `AUTH_SESSION_SECRET`. Override names with
+Required Worker vars/secrets are `OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`,
+`OIDC_CLIENT_SECRET`, and `AUTH_SESSION_SECRET`. The discovery document supplies
+the issuer used for token validation. `OIDC_ISSUER` remains supported as a
+backward-compatible fallback and is used to construct the standard discovery
+URL. Override names with
 `createAuth({ env: { issuer, clientId, clientSecret, sessionSecret } })`.
 
 ```js

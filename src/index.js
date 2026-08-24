@@ -41,7 +41,7 @@ export function createAuth(options = {}) {
   };
 
   async function login(request, env) {
-    const config = await configuration(env, envName("issuer", "OIDC_ISSUER"));
+    const config = await configuration(env, options);
     const state = random();
     const verifier = random();
     const nonce = random();
@@ -58,7 +58,7 @@ export function createAuth(options = {}) {
     const value = cookies(request)[names.state] || "";
     const [state, verifier, nonce, encodedReturn] = value.split(".");
     if (!state || !constantTimeEqual(state, url.searchParams.get("state") || "") || !verifier) return authError("The sign-in state was invalid or expired.", 400);
-    const config = await configuration(env, envName("issuer", "OIDC_ISSUER"));
+    const config = await configuration(env, options);
     const clientId = required(env, envName("clientId", "OIDC_CLIENT_ID"));
     const token = await fetchWithTimeout(config.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: required(env, envName("clientSecret", "OIDC_CLIENT_SECRET")), grant_type: "authorization_code", code: url.searchParams.get("code") || "", redirect_uri: callbackUrl(request), code_verifier: verifier }) }).then((response) => response.ok ? response.json() : Promise.reject(new Error("OIDC token exchange failed")));
     const claims = await verify(token.id_token, config, clientId, nonce);
@@ -78,17 +78,21 @@ async function getUser(request, env, secretName = "AUTH_SESSION_SECRET", session
   try { const user = JSON.parse(decoder.decode(decode(payload))); return user.exp > Date.now() / 1000 ? user : null; } catch { return null; }
 }
 
-async function configuration(env, key) {
-  const issuer = required(env, key).replace(/\/+$/, "") + "/";
-  const cached = configurationCache.get(issuer); if (cached && cached.exp > Date.now()) return cached.value;
-  const existing = configurationRequests.get(issuer); if (existing) return existing;
-  const request = fetchWithTimeout(issuer + ".well-known/openid-configuration").then(async (response) => {
+async function configuration(env, options = {}) {
+  const discoveryName = envNameFor(options, "discoveryUrl", "OIDC_DISCOVERY_URL");
+  const configuredDiscovery = env[discoveryName];
+  const discoveryUrl = configuredDiscovery || normalizeIssuer(required(env, envNameFor(options, "issuer", "OIDC_ISSUER"))).slice(0, -1) + "/.well-known/openid-configuration";
+  if (new URL(discoveryUrl).protocol !== "https:") throw new Error("OIDC discovery URL must use HTTPS");
+
+  const cached = configurationCache.get(discoveryUrl); if (cached && cached.exp > Date.now()) return cached.value;
+  const existing = configurationRequests.get(discoveryUrl); if (existing) return existing;
+  const request = fetchWithTimeout(discoveryUrl).then(async (response) => {
     if (!response.ok) throw new Error("Unable to load OIDC configuration");
     const value = await response.json();
-    if (normalizeIssuer(value.issuer || "") !== issuer) throw new Error("OIDC issuer mismatch");
-    configurationCache.set(issuer, { value, exp: Date.now() + OIDC_CACHE_MS }); return value;
-  }).finally(() => configurationRequests.delete(issuer));
-  configurationRequests.set(issuer, request); return request;
+    if (!value.issuer || new URL(value.issuer).protocol !== "https:") throw new Error("OIDC configuration returned an invalid issuer");
+    configurationCache.set(discoveryUrl, { value, exp: Date.now() + OIDC_CACHE_MS }); return value;
+  }).finally(() => configurationRequests.delete(discoveryUrl));
+  configurationRequests.set(discoveryUrl, request); return request;
 }
 async function verify(token, config, clientId, expectedNonce) {
   const [head, body, signature] = String(token || "").split("."); if (!head || !body || !signature) throw new Error("Malformed ID token");
@@ -113,6 +117,7 @@ function checkOrigin(request, allowedOrigins = []) {
 }
 async function sign(value, env, name, encoded = true) { const secret = required(env, name); if (name === "AUTH_SESSION_SECRET" && secret.length < 32) throw new Error("AUTH_SESSION_SECRET must be at least 32 characters"); const data = encoded ? base64url(encoder.encode(value)) : value; const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); const sig = base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(data)))); return encoded ? `${data}.${sig}` : sig; }
 function normalizeUser(claims) { return { sub: claims.sub, email: String(claims.email || "").toLowerCase(), name: claims.name || claims.email || claims.sub }; }
+function envNameFor(options, key, fallback) { return options.env?.[key] || fallback; }
 function required(env, key) { if (!env[key] || String(env[key]).startsWith("replace-with-")) throw new Error(`${key} is not configured`); return String(env[key]); }
 function random() { const bytes = new Uint8Array(32); crypto.getRandomValues(bytes); return base64url(bytes); }
 function base64url(bytes) { let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
