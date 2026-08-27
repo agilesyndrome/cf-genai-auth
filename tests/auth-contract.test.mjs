@@ -6,7 +6,7 @@ const env = {
   OIDC_DISCOVERY_URL: "https://issuer.example/.well-known/openid-configuration",
   OIDC_CLIENT_ID: "client-id",
   OIDC_CLIENT_SECRET: "client-secret",
-  AUTH_SESSION_SECRET: "a-secret-at-least-32-bytes-long",
+  AUTH_SESSION_SECRET: "a-secret-at-least-32-bytes-long-123",
 };
 
 function request(path, init = {}) {
@@ -65,4 +65,13 @@ test("authorize hook can restrict an authenticated route", async () => {
   const auth = createAuth({ publicPaths: ["/"], authorize: ({ user }) => user.email === "admin@example.com" });
   const response = await auth.handle(request("/admin"), env);
   assert.equal(response.status, 302);
+});
+
+test("valid signed sessions do not throw during authorization", async () => {
+  const payload = btoa(JSON.stringify({ sub: "subject", exp: Math.floor(Date.now() / 1000) + 300 })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const auth = createAuth({ publicPaths: ["/"], authorize: () => false });
+  const response = await auth.handle(request("/admin", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), env);
+  assert.equal(response.status, 403);
 });

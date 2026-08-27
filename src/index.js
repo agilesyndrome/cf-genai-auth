@@ -74,8 +74,7 @@ async function getUser(request, env, secretName = "AUTH_SESSION_SECRET", session
   if (!token) return null;
   const [payload, signature] = token.split(".");
   if (!payload || !signature || !constantTimeEqual(signature, await sign(payload, env, secretName, false))) return null;
-  if (typeof user.exp !== "number") return null;
-  try { const user = JSON.parse(decoder.decode(decode(payload))); return user.exp > Date.now() / 1000 ? user : null; } catch { return null; }
+  try { const user = JSON.parse(decoder.decode(decode(payload))); return typeof user.exp === "number" && user.exp > Date.now() / 1000 ? user : null; } catch { return null; }
 }
 
 async function configuration(env, options = {}) {
