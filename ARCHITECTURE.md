@@ -24,16 +24,13 @@ bindings. Cryptographic operations use Web Crypto.
 - src/index.js: auth feature and OIDC implementation.
 - tests/: auth contract and security tests.
 - CONTRACT.md: stable module integration contract.
-- Makefile: test/build/release lifecycle.
+- @agilesyndrome/cf-genai-cli: shared local project and release lifecycle.
 - .github/workflows/publish.yml: tag-driven npm Trusted Publishing.
 
 ## Build and release
 
-    make test
-    make build
-    make bump
-    make publish
-    make wait
+    npx --yes @agilesyndrome/cf-genai-cli@0.1.3 ci
+    npx --yes @agilesyndrome/cf-genai-cli@0.1.3 release
 
 Publish cf-genai-base before publishing auth when auth relies on a new base
 contract. After auth is available on npm, consumers can regenerate lockfiles
@@ -41,8 +38,3 @@ and deploy.
 
 The publish workflow uses GitHub OIDC/npm provenance. It validates tests and
 package contents before publishing; no npm token is stored in the repository.
-
-make status reports the exact npm version, matching Git tag, latest publish
-workflow result via gh, and local branch cleanliness/upstream alignment. It is
-read-only and may show WAIT/WARN for an unpublished template or unavailable
-external service.
