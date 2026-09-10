@@ -41,3 +41,8 @@ and deploy.
 
 The publish workflow uses GitHub OIDC/npm provenance. It validates tests and
 package contents before publishing; no npm token is stored in the repository.
+
+make status reports the exact npm version, matching Git tag, latest publish
+workflow result via gh, and local branch cleanliness/upstream alignment. It is
+read-only and may show WAIT/WARN for an unpublished template or unavailable
+external service.
