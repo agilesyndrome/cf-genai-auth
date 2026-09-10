@@ -14,7 +14,7 @@ URL. Override names with
 
 ```js
 const auth = createAuth({ publicPaths: ["/", "/api/public/"] });
-export default createWorker({ auth: auth.handle, fetch: router });
+export default createWorker({ features: [auth], fetch: router });
 ```
 
 The standard cookie is host-only and `Secure`; use a distinct `cookiePrefix`

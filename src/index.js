@@ -15,7 +15,7 @@ const OIDC_TIMEOUT_MS = 10_000;
 export function createAuth(options = {}) {
   const prefix = options.cookiePrefix || "__Host-cfgenai";
   if (!/^(?:__Host-)?[A-Za-z0-9_-]+$/.test(prefix)) throw new Error("cookiePrefix contains invalid characters");
-  const names = { state: `${prefix}_state`, session: `${prefix}_session` };
+  const names = { state: options.stateCookieName || `${prefix}_state`, session: options.sessionCookieName || `${prefix}_session` };
   const publicPaths = options.publicPaths || ["/auth/", "/favicon.svg", "/robots.txt", "/health"];
   const protectedPath = options.protectedPath || (() => true);
   const envName = (key, fallback) => options.env?.[key] || fallback;
@@ -25,11 +25,11 @@ export function createAuth(options = {}) {
       const url = new URL(request.url);
       if (url.pathname === "/auth/login") return login(request, env);
       if (url.pathname === "/auth/callback") return callback(request, env);
-      if (url.pathname === "/auth/logout") return logout(request, env, names.session);
-      if (url.pathname === "/api/me") return Response.json({ user: await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session) }, { headers: { "Cache-Control": "no-store" } });
+      if (url.pathname === "/auth/logout") return logout(request, env, names.session, options);
+      if (url.pathname === "/api/me") return Response.json({ user: await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options) }, { headers: { "Cache-Control": "no-store" } });
       if (!protectedPath(url.pathname) || publicPaths.some((path) => path === "/" ? url.pathname === "/" : url.pathname.startsWith(path))) return null;
       if (isMutation(request)) { const originResponse = checkOrigin(request, options.allowedOrigins); if (originResponse) return originResponse; }
-      const user = await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session);
+      const user = await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options);
       if (user && options.authorize && !(await options.authorize({ request, url, user, env }))) {
         return url.pathname.startsWith("/api/") ? Response.json({ error: "Administrator access is required." }, { status: 403, headers: { "Cache-Control": "no-store" } }) : authError("Administrator access is required.", 403);
       }
@@ -37,10 +37,17 @@ export function createAuth(options = {}) {
       if (url.pathname.startsWith("/api/")) return Response.json({ error: "Authentication is required." }, { status: 401, headers: { "Cache-Control": "no-store" } });
       return Response.redirect(`${url.origin}/auth/login?return_to=${encodeURIComponent(safeReturnTo(url.pathname + url.search))}`, 302);
     },
-    getUser: (request, env) => getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session),
+    getUser: (request, env) => getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options),
+    middleware(request, env, ctx, next, state) {
+      return this.handle(request, env, ctx).then((response) => response || next(request, env, ctx, state));
+    },
   };
 
   async function login(request, env) {
+    if (options.getSession && await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options)) {
+      const target = safeReturnTo(new URL(request.url).searchParams.get("return_to") || "/");
+      return redirect(new URL(request.url).origin + target, [clearCookie(names.state)]);
+    }
     const config = await configuration(env, options);
     const state = random();
     const verifier = random();
@@ -57,21 +64,25 @@ export function createAuth(options = {}) {
     const url = new URL(request.url);
     const value = cookies(request)[names.state] || "";
     const [state, verifier, nonce, encodedReturn] = value.split(".");
-    if (!state || !constantTimeEqual(state, url.searchParams.get("state") || "") || !verifier) return authError("The sign-in state was invalid or expired.", 400);
+    if (!state || !constantTimeEqual(state, url.searchParams.get("state") || "") || !verifier) {
+      if (options.getSession && await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options)) return redirect(new URL(request.url).origin, [clearCookie(names.state)]);
+      return authError("The sign-in state was invalid or expired.", 400);
+    }
     const config = await configuration(env, options);
     const clientId = required(env, envName("clientId", "OIDC_CLIENT_ID"));
     const token = await fetchWithTimeout(config.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: required(env, envName("clientSecret", "OIDC_CLIENT_SECRET")), grant_type: "authorization_code", code: url.searchParams.get("code") || "", redirect_uri: callbackUrl(request), code_verifier: verifier }) }).then((response) => response.ok ? response.json() : Promise.reject(new Error("OIDC token exchange failed")));
     const claims = await verify(token.id_token, config, clientId, nonce);
     if (!claims.sub) return authError("The identity provider returned no subject.", 502);
     const user = await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims));
-    const signed = await sign(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + (options.sessionSeconds || 28800) }), env, envName("sessionSecret", "AUTH_SESSION_SECRET"));
+    const signed = options.createSession ? await options.createSession(user, env, request) : await sign(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + (options.sessionSeconds || 28800) }), env, envName("sessionSecret", "AUTH_SESSION_SECRET"));
     return redirect(`${url.origin}${decodeReturn(encodedReturn)}`, [cookie(names.session, signed, options.sessionSeconds || 28800), clearCookie(names.state)]);
   }
 }
 
-async function getUser(request, env, secretName = "AUTH_SESSION_SECRET", sessionName = "__Host-cfgenai_session") {
+async function getUser(request, env, secretName = "AUTH_SESSION_SECRET", sessionName = "__Host-cfgenai_session", options = {}) {
   const token = cookies(request)[sessionName];
   if (!token) return null;
+  if (options.getSession) return (await options.getSession(token, env, request)) || null;
   const [payload, signature] = token.split(".");
   if (!payload || !signature || !constantTimeEqual(signature, await sign(payload, env, secretName, false))) return null;
   try { const user = JSON.parse(decoder.decode(decode(payload))); return typeof user.exp === "number" && user.exp > Date.now() / 1000 ? user : null; } catch { return null; }
@@ -80,7 +91,7 @@ async function getUser(request, env, secretName = "AUTH_SESSION_SECRET", session
 async function configuration(env, options = {}) {
   const discoveryName = envNameFor(options, "discoveryUrl", "OIDC_DISCOVERY_URL");
   const configuredDiscovery = env[discoveryName];
-  const discoveryUrl = configuredDiscovery || normalizeIssuer(required(env, envNameFor(options, "issuer", "OIDC_ISSUER"))).slice(0, -1) + "/.well-known/openid-configuration";
+  const discoveryUrl = configuredDiscovery ? (String(configuredDiscovery).endsWith("/.well-known/openid-configuration") ? configuredDiscovery : String(configuredDiscovery).replace(/\/+$/, "") + "/.well-known/openid-configuration") : normalizeIssuer(required(env, envNameFor(options, "issuer", "OIDC_ISSUER"))).slice(0, -1) + "/.well-known/openid-configuration";
   if (new URL(discoveryUrl).protocol !== "https:") throw new Error("OIDC discovery URL must use HTTPS");
 
   const cached = configurationCache.get(discoveryUrl); if (cached && cached.exp > Date.now()) return cached.value;
@@ -125,7 +136,11 @@ function cookies(request) { return Object.fromEntries((request.headers.get("Cook
 function cookie(name, value, age) { return `${name}=${value}; Max-Age=${age}; Path=/; HttpOnly; Secure; SameSite=Lax`; }
 function clearCookie(name) { return `${name}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`; }
 function redirect(location, setCookies) { const response = new Response(null, { status: 302, headers: { Location: String(location), "Cache-Control": "no-store" } }); for (const value of setCookies) response.headers.append("Set-Cookie", value); return response; }
-function logout(request, env, name) { const response = redirect(new URL(request.url).origin + "/", [clearCookie(name)]); return response; }
+async function logout(request, env, name, options = {}) {
+  const token = cookies(request)[name];
+  if (token && options.revokeSession) await options.revokeSession(token, env, request);
+  return redirect(new URL(request.url).origin + "/", [clearCookie(name)]);
+}
 function authError(message, status) { return new Response(message, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }); }
 function callbackUrl(request) { return `${new URL(request.url).origin}/auth/callback`; }
 function safeReturnTo(value) { return value?.startsWith("/") && !value.startsWith("//") && !value.startsWith("/auth/") ? value : "/"; }

@@ -1,6 +1,6 @@
 {
   "name": "@agilesyndrome/cf-genai-auth",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "check": "node --check src/index.js",
@@ -12,7 +12,8 @@
   "description": "Provider-neutral OIDC authentication for Cloudflare Workers.",
   "license": "MIT",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "files": [
     "src",
