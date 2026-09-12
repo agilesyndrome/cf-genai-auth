@@ -39,6 +39,7 @@ export function createAuth(options = {}) {
       return Response.redirect(`${url.origin}/auth/login?return_to=${encodeURIComponent(safeReturnTo(url.pathname + url.search))}`, 302);
     },
     getUser: (request, env) => getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options),
+    healthcheck: async (env) => ({ feature: "auth", component: "configuration", displayName: "Authentication configuration", state: [envName("issuer", "OIDC_ISSUER"), envName("clientId", "OIDC_CLIENT_ID"), envName("clientSecret", "OIDC_CLIENT_SECRET"), envName("sessionSecret", "AUTH_SESSION_SECRET")].every((key) => env?.[key] && !String(env[key]).startsWith("replace-with-")) ? "green" : "red" }),
     middleware(request, env, ctx, next, state) {
       return this.handle(request, env, ctx).then((response) => response || next(request, env, ctx, state));
     },
