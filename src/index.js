@@ -6,6 +6,8 @@ const jwksCache = new Map();
 const jwksRequests = new Map();
 const OIDC_CACHE_MS = 15 * 60 * 1000;
 const OIDC_TIMEOUT_MS = 10_000;
+export const PACKAGE_NAME = "@agilesyndrome/cf-genai-auth";
+export const VERSION = "1.0.1";
 
 /**
  * Generic OIDC auth for Workers. It uses Authorization Code + PKCE and a
@@ -21,6 +23,7 @@ export function createAuth(options = {}) {
   const envName = (key, fallback) => options.env?.[key] || fallback;
 
   return {
+    name: "auth", packageName: PACKAGE_NAME, version: VERSION,
     async handle(request, env) {
       const url = new URL(request.url);
       if (url.pathname === "/auth/login") return login(request, env);
