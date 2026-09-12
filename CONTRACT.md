@@ -8,8 +8,7 @@ when the site router should continue. It owns the reserved auth routes and
 Browser requests are redirected to login. `getUser` returns the normalized
 session user or `null`.
 
-The default session is an HMAC-signed, host-only cookie. This is suitable for
-small sites and staging isolation. Sites requiring revocation, multi-device
+The default session is an HMAC-signed, host-only cookie. This is suitable for small sites and staging isolation. Set `delegateAdmin: true` when the provider is composed with the base admin boundary. Sites requiring revocation, multi-device
 logout, or durable sessions can provide `createSession`, `getSession`, and
 `revokeSession` adapters. The adapter receives the opaque cookie token and owns
 its D1 or other binding-backed persistence.

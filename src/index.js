@@ -27,6 +27,7 @@ export function createAuth(options = {}) {
       if (url.pathname === "/auth/callback") return callback(request, env);
       if (url.pathname === "/auth/logout") return logout(request, env, names.session, options);
       if (url.pathname === "/api/me") return Response.json({ user: await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options) }, { headers: { "Cache-Control": "no-store" } });
+      if (options.delegateAdmin && isAdminPath(url.pathname)) return null;
       if (!protectedPath(url.pathname) || publicPaths.some((path) => path === "/" ? url.pathname === "/" : url.pathname.startsWith(path))) return null;
       if (isMutation(request)) { const originResponse = checkOrigin(request, options.allowedOrigins); if (originResponse) return originResponse; }
       const user = await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options);
@@ -56,7 +57,7 @@ export function createAuth(options = {}) {
     const returnTo = safeReturnTo(new URL(request.url).searchParams.get("return_to") || "/");
     const stateValue = `${state}.${verifier}.${nonce}.${base64url(encoder.encode(returnTo))}`;
     const authorize = new URL(config.authorization_endpoint);
-    authorize.search = new URLSearchParams({ client_id: required(env, envName("clientId", "OIDC_CLIENT_ID")), response_type: "code", redirect_uri: callbackUrl(request), scope: options.scope || "openid profile email", state, code_challenge: challenge, code_challenge_method: "S256", nonce }).toString();
+    authorize.search = new URLSearchParams({ client_id: required(env, envName("clientId", "OIDC_CLIENT_ID")), response_type: "code", redirect_uri: callbackUrl(request, env, options), scope: options.scope || "openid profile email", state, code_challenge: challenge, code_challenge_method: "S256", nonce }).toString();
     return redirect(authorize, [cookie(names.state, stateValue, 600)]);
   }
 
@@ -70,7 +71,7 @@ export function createAuth(options = {}) {
     }
     const config = await configuration(env, options);
     const clientId = required(env, envName("clientId", "OIDC_CLIENT_ID"));
-    const token = await fetchWithTimeout(config.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: required(env, envName("clientSecret", "OIDC_CLIENT_SECRET")), grant_type: "authorization_code", code: url.searchParams.get("code") || "", redirect_uri: callbackUrl(request), code_verifier: verifier }) }).then((response) => response.ok ? response.json() : Promise.reject(new Error("OIDC token exchange failed")));
+    const token = await fetchWithTimeout(config.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: required(env, envName("clientSecret", "OIDC_CLIENT_SECRET")), grant_type: "authorization_code", code: url.searchParams.get("code") || "", redirect_uri: callbackUrl(request, env, options), code_verifier: verifier }) }).then((response) => response.ok ? response.json() : Promise.reject(new Error("OIDC token exchange failed")));
     const claims = await verify(token.id_token, config, clientId, nonce);
     if (!claims.sub) return authError("The identity provider returned no subject.", 502);
     const user = await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims));
@@ -141,8 +142,9 @@ async function logout(request, env, name, options = {}) {
   if (token && options.revokeSession) await options.revokeSession(token, env, request);
   return redirect(new URL(request.url).origin + "/", [clearCookie(name)]);
 }
+function isAdminPath(pathname) { return pathname === "/admin" || pathname.startsWith("/admin/") || pathname === "/api/admin" || pathname.startsWith("/api/admin/"); }
 function authError(message, status) { return new Response(message, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }); }
-function callbackUrl(request) { return `${new URL(request.url).origin}/auth/callback`; }
+function callbackUrl(request, env, options) { const configuredOrigin = env[envNameFor(options, "publicOrigin", "PUBLIC_ORIGIN")]; return (configuredOrigin ? new URL(String(configuredOrigin)).origin : new URL(request.url).origin) + "/auth/callback"; }
 function safeReturnTo(value) { return value?.startsWith("/") && !value.startsWith("//") && !value.startsWith("/auth/") ? value : "/"; }
 function decodeReturn(value) { try { return safeReturnTo(decoder.decode(decode(value))); } catch { return "/"; } }
 function constantTimeEqual(a, b) { const aa = encoder.encode(a), bb = encoder.encode(b); let n = aa.length ^ bb.length; for (let i = 0; i < Math.max(aa.length, bb.length); i++) n |= (aa[i] || 0) ^ (bb[i] || 0); return n === 0; }
