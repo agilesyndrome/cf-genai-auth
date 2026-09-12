@@ -7,7 +7,7 @@ const jwksRequests = new Map();
 const OIDC_CACHE_MS = 15 * 60 * 1000;
 const OIDC_TIMEOUT_MS = 10_000;
 export const PACKAGE_NAME = "@agilesyndrome/cf-genai-auth";
-export const VERSION = "1.0.1";
+export const VERSION = "1.0.2";
 
 /**
  * Generic OIDC auth for Workers. It uses Authorization Code + PKCE and a
