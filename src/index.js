@@ -7,7 +7,7 @@ const jwksRequests = new Map();
 const OIDC_CACHE_MS = 15 * 60 * 1000;
 const OIDC_TIMEOUT_MS = 10_000;
 export const PACKAGE_NAME = "@agilesyndrome/cf-genai-auth";
-export const VERSION = "1.0.2";
+export const VERSION = "4.1.1";
 
 /**
  * Generic OIDC auth for Workers. It uses Authorization Code + PKCE and a
@@ -23,12 +23,19 @@ export function createAuth(options = {}) {
   const envName = (key, fallback) => options.env?.[key] || fallback;
 
   return {
-    name: "auth", packageName: PACKAGE_NAME, version: VERSION,
+    name: "auth", displayName: options.displayName || "Authentication", packageName: PACKAGE_NAME, version: VERSION,
+    dataResources: options.dataResources || [], routes: options.routes || [],
+    healthchecks: options.healthchecks || [], circuitBreakers: options.circuitBreakers || [],
     async handle(request, env) {
       const url = new URL(request.url);
       if (url.pathname === "/auth/login") return login(request, env);
       if (url.pathname === "/auth/callback") return callback(request, env);
-      if (url.pathname === "/auth/logout") return logout(request, env, names.session, options);
+      if (url.pathname === "/auth/logout") {
+        if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST", "Cache-Control": "no-store" } });
+        const originResponse = checkOrigin(request, options.allowedOrigins);
+        if (originResponse) return originResponse;
+        return logout(request, env, names.session, options);
+      }
       if (url.pathname === "/api/me") return Response.json({ user: await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options) }, { headers: { "Cache-Control": "no-store" } });
       if (options.delegateAdmin && isAdminPath(url.pathname)) return null;
       if (!protectedPath(url.pathname) || publicPaths.some((path) => path === "/" ? url.pathname === "/" : url.pathname.startsWith(path))) return null;
@@ -78,7 +85,7 @@ export function createAuth(options = {}) {
     const token = await fetchWithTimeout(config.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: required(env, envName("clientSecret", "OIDC_CLIENT_SECRET")), grant_type: "authorization_code", code: url.searchParams.get("code") || "", redirect_uri: callbackUrl(request, env, options), code_verifier: verifier }) }).then((response) => response.ok ? response.json() : Promise.reject(new Error("OIDC token exchange failed")));
     const claims = await verify(token.id_token, config, clientId, nonce);
     if (!claims.sub) return authError("The identity provider returned no subject.", 502);
-    const user = await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims));
+    const user = { ...(await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims))), email_verified: claims.email_verified === true };
     const signed = options.createSession ? await options.createSession(user, env, request) : await sign(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + (options.sessionSeconds || 28800) }), env, envName("sessionSecret", "AUTH_SESSION_SECRET"));
     return redirect(`${url.origin}${decodeReturn(encodedReturn)}`, [cookie(names.session, signed, options.sessionSeconds || 28800), clearCookie(names.state)]);
   }
@@ -105,6 +112,7 @@ async function configuration(env, options = {}) {
     if (!response.ok) throw new Error("Unable to load OIDC configuration");
     const value = await response.json();
     if (!value.issuer || new URL(value.issuer).protocol !== "https:") throw new Error("OIDC configuration returned an invalid issuer");
+    if (!value.jwks_uri || new URL(value.jwks_uri).protocol !== "https:") throw new Error("OIDC configuration returned an invalid JWKS URL");
     configurationCache.set(discoveryUrl, { value, exp: Date.now() + OIDC_CACHE_MS }); return value;
   }).finally(() => configurationRequests.delete(discoveryUrl));
   configurationRequests.set(discoveryUrl, request); return request;
@@ -131,7 +139,7 @@ function checkOrigin(request, allowedOrigins = []) {
   try { const requestOrigin = new URL(request.url).origin; const originUrl = new URL(origin); const allowed = originUrl.origin === requestOrigin || allowedOrigins.includes(originUrl.origin); return allowed ? null : authError("This request did not pass the same-origin check.", 403); } catch { return authError("This request did not pass the same-origin check.", 403); }
 }
 async function sign(value, env, name, encoded = true) { const secret = required(env, name); if (name === "AUTH_SESSION_SECRET" && secret.length < 32) throw new Error("AUTH_SESSION_SECRET must be at least 32 characters"); const data = encoded ? base64url(encoder.encode(value)) : value; const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); const sig = base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(data)))); return encoded ? `${data}.${sig}` : sig; }
-function normalizeUser(claims) { return { sub: claims.sub, email: String(claims.email || "").toLowerCase(), name: claims.name || claims.email || claims.sub }; }
+function normalizeUser(claims) { return { sub: claims.sub, email: String(claims.email || "").toLowerCase(), name: claims.name || claims.email || claims.sub, email_verified: claims.email_verified === true }; }
 function envNameFor(options, key, fallback) { return options.env?.[key] || fallback; }
 function required(env, key) { if (!env[key] || String(env[key]).startsWith("replace-with-")) throw new Error(`${key} is not configured`); return String(env[key]); }
 function random() { const bytes = new Uint8Array(32); crypto.getRandomValues(bytes); return base64url(bytes); }
