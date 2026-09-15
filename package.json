@@ -26,5 +26,8 @@
     "type": "git",
     "url": "git+https://github.com/agilesyndrome/cf-genai-auth.git"
   },
-  "homepage": "https://github.com/agilesyndrome/cf-genai-auth#readme"
+  "homepage": "https://github.com/agilesyndrome/cf-genai-auth#readme",
+  "dependencies": {
+    "@agilesyndrome/cf-genai-base": "^4.1.1"
+  }
 }
