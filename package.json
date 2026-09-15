@@ -1,6 +1,6 @@
 {
   "name": "@agilesyndrome/cf-genai-auth",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "type": "module",
   "scripts": {
     "check": "node --check src/index.js",
