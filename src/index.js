@@ -11,6 +11,11 @@ const OIDC_TIMEOUT_MS = 10_000;
 export const PACKAGE_NAME = "@agilesyndrome/cf-genai-auth";
 export const VERSION = "4.1.1";
 
+export const authRepositoryDefinitions = [
+  { name: "users", resource: "auth_users", scope: "system", resourceDefinition: { name: "auth_users", table: "auth_users", scope: "system", columns: ["id", "provider", "subject", "email", "display_name", "is_admin", "created_at", "updated_at"], readableColumns: ["id", "provider", "subject", "email", "display_name", "is_admin", "created_at", "updated_at"], orderableColumns: ["id", "email", "created_at"], writableColumns: ["display_name", "is_admin"] }, relations: { groups: { repository: "groups", foreignKey: "user_id" } } },
+  { name: "groups", resource: "auth_groups", scope: "system", resourceDefinition: { name: "auth_groups", table: "auth_groups", scope: "system", columns: ["name", "display_name", "description", "created_at", "updated_at"], idColumn: "name", readableColumns: ["name", "display_name", "description", "created_at", "updated_at"], orderableColumns: ["name", "created_at"], writableColumns: ["name", "display_name", "description"] }, relations: { users: { repository: "users", foreignKey: "group_name" } } },
+];
+
 /**
  * Generic OIDC auth for Workers. It uses Authorization Code + PKCE and a
  * signed, host-only cookie, so a site needs no auth service of its own.
@@ -25,7 +30,7 @@ export function createAuth(options = {}) {
   const envName = (key, fallback) => options.env?.[key] || fallback;
 
   return {
-    name: "auth", displayName: options.displayName || "Authentication", packageName: PACKAGE_NAME, version: VERSION,
+    name: "auth", displayName: options.displayName || "Authentication", packageName: PACKAGE_NAME, version: VERSION, repositories: options.repositories || [],
     dataResources: options.dataResources || [], routes: options.routes || [],
     healthchecks: options.healthchecks || [], circuitBreakers: options.circuitBreakers || [],
     async handle(request, env) {
