@@ -1,3 +1,5 @@
+import { ensureUser } from "@agilesyndrome/cf-genai-base";
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const configurationCache = new Map();
@@ -36,11 +38,11 @@ export function createAuth(options = {}) {
         if (originResponse) return originResponse;
         return logout(request, env, names.session, options);
       }
-      if (url.pathname === "/api/me") return Response.json({ user: await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options) }, { headers: { "Cache-Control": "no-store" } });
+      if (url.pathname === "/api/me") return Response.json({ user: await resolveUser(request, env) }, { headers: { "Cache-Control": "no-store" } });
       if (options.delegateAdmin && isAdminPath(url.pathname)) return null;
       if (!protectedPath(url.pathname) || publicPaths.some((path) => path === "/" ? url.pathname === "/" : url.pathname.startsWith(path))) return null;
       if (isMutation(request)) { const originResponse = checkOrigin(request, options.allowedOrigins); if (originResponse) return originResponse; }
-      const user = await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options);
+      const user = await resolveUser(request, env);
       if (user && options.authorize && !(await options.authorize({ request, url, user, env }))) {
         return url.pathname.startsWith("/api/") ? Response.json({ error: "Administrator access is required." }, { status: 403, headers: { "Cache-Control": "no-store" } }) : authError("Administrator access is required.", 403);
       }
@@ -48,7 +50,7 @@ export function createAuth(options = {}) {
       if (url.pathname.startsWith("/api/")) return Response.json({ error: "Authentication is required." }, { status: 401, headers: { "Cache-Control": "no-store" } });
       return Response.redirect(`${url.origin}/auth/login?return_to=${encodeURIComponent(safeReturnTo(url.pathname + url.search))}`, 302);
     },
-    getUser: (request, env) => getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options),
+    getUser: (request, env) => resolveUser(request, env),
     healthcheck: async (env) => ({ feature: "auth", component: "configuration", displayName: "Authentication configuration", state: [envName("issuer", "OIDC_ISSUER"), envName("clientId", "OIDC_CLIENT_ID"), envName("clientSecret", "OIDC_CLIENT_SECRET"), envName("sessionSecret", "AUTH_SESSION_SECRET")].every((key) => env?.[key] && !String(env[key]).startsWith("replace-with-")) ? "green" : "red" }),
     middleware(request, env, ctx, next, state) {
       return this.handle(request, env, ctx).then((response) => response || next(request, env, ctx, state));
@@ -56,7 +58,7 @@ export function createAuth(options = {}) {
   };
 
   async function login(request, env) {
-    if (options.getSession && await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options)) {
+    if (options.getSession && await resolveUser(request, env)) {
       const target = safeReturnTo(new URL(request.url).searchParams.get("return_to") || "/");
       return redirect(new URL(request.url).origin + target, [clearCookie(names.state)]);
     }
@@ -77,7 +79,7 @@ export function createAuth(options = {}) {
     const value = cookies(request)[names.state] || "";
     const [state, verifier, nonce, encodedReturn] = value.split(".");
     if (!state || !constantTimeEqual(state, url.searchParams.get("state") || "") || !verifier) {
-      if (options.getSession && await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options)) return redirect(new URL(request.url).origin, [clearCookie(names.state)]);
+      if (options.getSession && await resolveUser(request, env)) return redirect(new URL(request.url).origin, [clearCookie(names.state)]);
       return authError("The sign-in state was invalid or expired.", 400);
     }
     const config = await configuration(env, options);
@@ -85,10 +87,25 @@ export function createAuth(options = {}) {
     const token = await fetchWithTimeout(config.token_endpoint, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: required(env, envName("clientSecret", "OIDC_CLIENT_SECRET")), grant_type: "authorization_code", code: url.searchParams.get("code") || "", redirect_uri: callbackUrl(request, env, options), code_verifier: verifier }) }).then((response) => response.ok ? response.json() : Promise.reject(new Error("OIDC token exchange failed")));
     const claims = await verify(token.id_token, config, clientId, nonce);
     if (!claims.sub) return authError("The identity provider returned no subject.", 502);
-    const user = { ...(await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims))), email_verified: claims.email_verified === true };
+    const user = await resolveLoginUser({ ...(await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims))), email_verified: claims.email_verified === true }, env, request);
     const signed = options.createSession ? await options.createSession(user, env, request) : await sign(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + (options.sessionSeconds || 28800) }), env, envName("sessionSecret", "AUTH_SESSION_SECRET"));
     return redirect(`${url.origin}${decodeReturn(encodedReturn)}`, [cookie(names.session, signed, options.sessionSeconds || 28800), clearCookie(names.state)]);
   }
+  async function resolveUser(request, env) {
+    return hydrateUser(await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options), env, options);
+  }
+
+  async function resolveLoginUser(user, env, request) {
+    const hydrated = await hydrateUser(user, env, options);
+    if (options.loginAuthorize && !(await options.loginAuthorize({ user: hydrated, request, env }))) throw authError("Authentication is not currently permitted.", 403);
+    return hydrated;
+  }
+}
+
+async function hydrateUser(user, env, options) {
+  if (!user || !options.persistUser || !env?.DB) return user;
+  const authUser = await ensureUser(env, user, { who: `user:${user.sub || "unknown"}` });
+  return { ...user, authUser };
 }
 
 async function getUser(request, env, secretName = "AUTH_SESSION_SECRET", sessionName = "__Host-cfgenai_session", options = {}) {

@@ -75,3 +75,32 @@ test("valid signed sessions do not throw during authorization", async () => {
   const response = await auth.handle(request("/admin", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), env);
   assert.equal(response.status, 403);
 });
+
+test("persistUser hydrates the canonical base auth user", async () => {
+  const statements = [];
+  const envWithDb = {
+    ...env,
+    DB: {
+      prepare(sql) {
+        const statement = {
+          bind(...values) { statement.values = values; return statement; },
+          async first() {
+            if (sql.includes("SELECT * FROM auth_users WHERE provider=?")) return { id: "auth-1", provider: "oauth", subject: "subject", email: "person@example.com", display_name: "Person", is_admin: 1 };
+            return null;
+          },
+          async run() { statements.push({ sql, values: statement.values }); return { success: true }; },
+        };
+        return statement;
+      },
+      async batch(batchStatements) { statements.push(...batchStatements); return []; },
+    },
+  };
+  const payload = btoa(JSON.stringify({ sub: "subject", email: "person@example.com", name: "Person", email_verified: true, auth_strategy: "oauth", exp: Math.floor(Date.now() / 1000) + 300 })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const auth = createAuth({ persistUser: true, publicPaths: ["/"] });
+  const user = await auth.getUser(request("/api/me", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), envWithDb);
+  assert.equal(user.authUser.id, "auth-1");
+  assert.equal(user.authUser.is_admin, true);
+  assert.ok(statements.length >= 2);
+});

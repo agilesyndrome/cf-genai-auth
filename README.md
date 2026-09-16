@@ -18,8 +18,17 @@ export default createWorker({ features: [auth], fetch: router });
 ```
 
 The standard cookie is host-only and `Secure`; use a distinct `cookiePrefix`
-when multiple environments share a browser. Authorization, admin roles, and
-site-specific user records remain application concerns.
+when multiple environments share a browser. Authorization policy remains an
+application concern, while sites using cf-genai-base can opt into canonical
+user persistence:
+
+```js
+const auth = createAuth({ persistUser: true });
+```
+
+With `persistUser`, `getUser` returns the normalized identity plus `authUser`,
+the `auth_users` record maintained by cf-genai-base. This keeps site code from
+reimplementing user lookups and lets base authorization reuse the hydrated row.
 
 ## Authorization
 
@@ -27,3 +36,8 @@ Pass `authorize({ request, url, user, env })` to `createAuth` when a site needs
 role or route-level access control. Return `true` to continue or `false` for a
 403 response. Keep the policy in the site initializer; the library does not
 assume how roles are stored.
+
+Use `loginAuthorize({ user, request, env })` for a policy that must run after a
+new identity has been persisted. This is useful for application circuit
+breakers or enrollment rules. Throw an auth error to reject the login or return
+`false` to receive the standard 403 response.
