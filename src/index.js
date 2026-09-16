@@ -1,4 +1,4 @@
-import { ensureUser } from "@agilesyndrome/cf-genai-base";
+import { ensureUser, sameOrigin, secureJson, secureText } from "@agilesyndrome/cf-genai-base";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -9,11 +9,11 @@ const jwksRequests = new Map();
 const OIDC_CACHE_MS = 15 * 60 * 1000;
 const OIDC_TIMEOUT_MS = 10_000;
 export const PACKAGE_NAME = "@agilesyndrome/cf-genai-auth";
-export const VERSION = "4.1.1";
+export const VERSION = "5.0.0";
 
 export const authRepositoryDefinitions = [
-  { name: "users", resource: "auth_users", scope: "system", resourceDefinition: { name: "auth_users", table: "auth_users", scope: "system", columns: ["id", "provider", "subject", "email", "display_name", "is_admin", "created_at", "updated_at"], readableColumns: ["id", "provider", "subject", "email", "display_name", "is_admin", "created_at", "updated_at"], orderableColumns: ["id", "email", "created_at"], writableColumns: ["display_name", "is_admin"] }, relations: { groups: { repository: "groups", foreignKey: "user_id" } } },
-  { name: "groups", resource: "auth_groups", scope: "system", resourceDefinition: { name: "auth_groups", table: "auth_groups", scope: "system", columns: ["name", "display_name", "description", "created_at", "updated_at"], idColumn: "name", readableColumns: ["name", "display_name", "description", "created_at", "updated_at"], orderableColumns: ["name", "created_at"], writableColumns: ["name", "display_name", "description"] }, relations: { users: { repository: "users", foreignKey: "group_name" } } },
+  { name: "users", resource: "auth_users", scope: "system", resourceDefinition: { name: "auth_users", table: "auth_users", scope: "system", columns: ["id", "provider", "subject", "email", "display_name", "is_admin", "created_at", "updated_at"], readableColumns: ["id", "provider", "subject", "email", "display_name", "is_admin", "created_at", "updated_at"], orderableColumns: ["id", "email", "created_at"], writableColumns: ["display_name", "is_admin"] } },
+  { name: "groups", resource: "auth_groups", scope: "system", resourceDefinition: { name: "auth_groups", table: "auth_groups", scope: "system", columns: ["name", "display_name", "description", "created_at", "updated_at"], idColumn: "name", readableColumns: ["name", "display_name", "description", "created_at", "updated_at"], orderableColumns: ["name", "created_at"], writableColumns: ["name", "display_name", "description"] } },
 ];
 
 /**
@@ -30,7 +30,7 @@ export function createAuth(options = {}) {
   const envName = (key, fallback) => options.env?.[key] || fallback;
 
   return {
-    name: "auth", displayName: options.displayName || "Authentication", packageName: PACKAGE_NAME, version: VERSION, repositories: options.repositories || [],
+    name: "auth", displayName: options.displayName || "Authentication", packageName: PACKAGE_NAME, version: VERSION, repositories: options.repositories || authRepositoryDefinitions,
     dataResources: options.dataResources || [], routes: options.routes || [],
     healthchecks: options.healthchecks || [], circuitBreakers: options.circuitBreakers || [],
     async handle(request, env) {
@@ -43,8 +43,7 @@ export function createAuth(options = {}) {
         if (originResponse) return originResponse;
         return logout(request, env, names.session, options);
       }
-      if (url.pathname === "/api/me") return Response.json({ user: await resolveUser(request, env) }, { headers: { "Cache-Control": "no-store" } });
-      if (options.delegateAdmin && isAdminPath(url.pathname)) return null;
+      if (url.pathname === "/api/me") return secureJson({ user: publicUser(await resolveUser(request, env)) });
       if (!protectedPath(url.pathname) || publicPaths.some((path) => path === "/" ? url.pathname === "/" : url.pathname.startsWith(path))) return null;
       if (isMutation(request)) { const originResponse = checkOrigin(request, options.allowedOrigins); if (originResponse) return originResponse; }
       const user = await resolveUser(request, env);
@@ -56,7 +55,7 @@ export function createAuth(options = {}) {
       return Response.redirect(`${url.origin}/auth/login?return_to=${encodeURIComponent(safeReturnTo(url.pathname + url.search))}`, 302);
     },
     getUser: (request, env) => resolveUser(request, env),
-    healthcheck: async (env) => ({ feature: "auth", component: "configuration", displayName: "Authentication configuration", state: [envName("issuer", "OIDC_ISSUER"), envName("clientId", "OIDC_CLIENT_ID"), envName("clientSecret", "OIDC_CLIENT_SECRET"), envName("sessionSecret", "AUTH_SESSION_SECRET")].every((key) => env?.[key] && !String(env[key]).startsWith("replace-with-")) ? "green" : "red" }),
+    healthcheck: async (env) => ({ feature: "auth", component: "configuration", displayName: "Authentication configuration", state: Boolean(env?.DB) && [envName("issuer", "OIDC_ISSUER"), envName("clientId", "OIDC_CLIENT_ID"), envName("clientSecret", "OIDC_CLIENT_SECRET"), envName("sessionSecret", "AUTH_SESSION_SECRET")].every((key) => env?.[key] && !String(env[key]).startsWith("replace-with-")) ? "green" : "red" }),
     middleware(request, env, ctx, next, state) {
       return this.handle(request, env, ctx).then((response) => response || next(request, env, ctx, state));
     },
@@ -93,24 +92,27 @@ export function createAuth(options = {}) {
     const claims = await verify(token.id_token, config, clientId, nonce);
     if (!claims.sub) return authError("The identity provider returned no subject.", 502);
     const user = await resolveLoginUser({ ...(await (options.onLogin ? options.onLogin(claims, env) : normalizeUser(claims))), email_verified: claims.email_verified === true }, env, request);
-    const signed = options.createSession ? await options.createSession(user, env, request) : await sign(JSON.stringify({ ...user, exp: Math.floor(Date.now() / 1000) + (options.sessionSeconds || 28800) }), env, envName("sessionSecret", "AUTH_SESSION_SECRET"));
+    const identity = sessionIdentity(user);
+    const signed = options.createSession ? await options.createSession(identity, env, request) : await sign(JSON.stringify({ ...identity, exp: Math.floor(Date.now() / 1000) + (options.sessionSeconds || 28800) }), env, envName("sessionSecret", "AUTH_SESSION_SECRET"));
+    await env.event?.("auth.login.succeeded", "auth", { userId: user.authUser.id });
     return redirect(`${url.origin}${decodeReturn(encodedReturn)}`, [cookie(names.session, signed, options.sessionSeconds || 28800), clearCookie(names.state)]);
   }
   async function resolveUser(request, env) {
-    const user = await hydrateUser(await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options), env, options);
+    const user = await hydrateUser(await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options), env);
     if (user && options.sessionAuthorize && !(await options.sessionAuthorize({ user, request, env }))) return null;
     return user;
   }
 
   async function resolveLoginUser(user, env, request) {
-    const hydrated = await hydrateUser(user, env, options);
+    const hydrated = await hydrateUser(user, env);
     if (options.loginAuthorize && !(await options.loginAuthorize({ user: hydrated, request, env }))) throw authError("Authentication is not currently permitted.", 403);
     return hydrated;
   }
 }
 
-async function hydrateUser(user, env, options) {
-  if (!user || !options.persistUser || !env?.DB) return user;
+async function hydrateUser(user, env) {
+  if (!user) return user;
+  if (!env?.DB) throw new Error("cf-genai-auth requires the base DB binding for canonical users");
   const authUser = await ensureUser(env, user, { who: `user:${user.sub || "unknown"}` });
   return { ...user, authUser };
 }
@@ -159,8 +161,9 @@ async function fetchWithTimeout(input, init = {}) { return fetch(input, { ...ini
 function normalizeIssuer(value) { return String(value).replace(/\/+$/, "") + "/"; }
 function isMutation(request) { return ["POST", "PUT", "PATCH", "DELETE"].includes(request.method); }
 function checkOrigin(request, allowedOrigins = []) {
-  const origin = request.headers.get("Origin"); if (!origin) return authError("A same-origin request is required.", 403);
-  try { const requestOrigin = new URL(request.url).origin; const originUrl = new URL(origin); const allowed = originUrl.origin === requestOrigin || allowedOrigins.includes(originUrl.origin); return allowed ? null : authError("This request did not pass the same-origin check.", 403); } catch { return authError("This request did not pass the same-origin check.", 403); }
+  let requestOrigin;
+  try { requestOrigin = new URL(request.url).origin; } catch { return authError("This request did not pass the same-origin check.", 403); }
+  return sameOrigin(request, [requestOrigin, ...allowedOrigins]) ? null : authError("A same-origin request is required.", 403);
 }
 async function sign(value, env, name, encoded = true) { const secret = required(env, name); if (name === "AUTH_SESSION_SECRET" && secret.length < 32) throw new Error("AUTH_SESSION_SECRET must be at least 32 characters"); const data = encoded ? base64url(encoder.encode(value)) : value; const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); const sig = base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(data)))); return encoded ? `${data}.${sig}` : sig; }
 function normalizeUser(claims) { return { sub: claims.sub, email: String(claims.email || "").toLowerCase(), name: claims.name || claims.email || claims.sub, email_verified: claims.email_verified === true }; }
@@ -176,11 +179,13 @@ function redirect(location, setCookies) { const response = new Response(null, { 
 async function logout(request, env, name, options = {}) {
   const token = cookies(request)[name];
   if (token && options.revokeSession) await options.revokeSession(token, env, request);
+  await env.event?.("auth.logout", "auth");
   return redirect(new URL(request.url).origin + "/", [clearCookie(name)]);
 }
-function isAdminPath(pathname) { return pathname === "/admin" || pathname.startsWith("/admin/") || pathname === "/api/admin" || pathname.startsWith("/api/admin/"); }
-function authError(message, status) { return new Response(message, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }); }
+function authError(message, status) { return secureText(message, status); }
 function callbackUrl(request, env, options) { const configuredOrigin = env[envNameFor(options, "publicOrigin", "PUBLIC_ORIGIN")]; return (configuredOrigin ? new URL(String(configuredOrigin)).origin : new URL(request.url).origin) + "/auth/callback"; }
 function safeReturnTo(value) { return value?.startsWith("/") && !value.startsWith("//") && !value.startsWith("/auth/") ? value : "/"; }
 function decodeReturn(value) { try { return safeReturnTo(decoder.decode(decode(value))); } catch { return "/"; } }
 function constantTimeEqual(a, b) { const aa = encoder.encode(a), bb = encoder.encode(b); let n = aa.length ^ bb.length; for (let i = 0; i < Math.max(aa.length, bb.length); i++) n |= (aa[i] || 0) ^ (bb[i] || 0); return n === 0; }
+function sessionIdentity(user) { const { authUser: _authUser, exp: _exp, ...identity } = user || {}; return identity; }
+function publicUser(user) { return user ? { id: user.authUser.id, email: user.email || user.authUser.email, name: user.name || user.authUser.display_name, isAdmin: Boolean(user.authUser.is_admin) } : null; }

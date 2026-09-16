@@ -19,16 +19,18 @@ export default createWorker({ features: [auth], fetch: router });
 
 The standard cookie is host-only and `Secure`; use a distinct `cookiePrefix`
 when multiple environments share a browser. Authorization policy remains an
-application concern, while sites using cf-genai-base can opt into canonical
-user persistence:
+application concern. Version 5 always persists authenticated identities through
+cf-genai-base and requires its `DB` binding:
 
 ```js
-const auth = createAuth({ persistUser: true });
+const auth = createAuth();
 ```
 
-With `persistUser`, `getUser` returns the normalized identity plus `authUser`,
+`getUser` returns the normalized identity plus `authUser`,
 the `auth_users` record maintained by cf-genai-base. This keeps site code from
 reimplementing user lookups and lets base authorization reuse the hydrated row.
+The feature registers its `users` and `groups` repositories with base by
+default. Override `repositories` only when replacing the complete definitions.
 
 ## Authorization
 
