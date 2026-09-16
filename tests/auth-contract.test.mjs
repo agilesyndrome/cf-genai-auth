@@ -13,6 +13,26 @@ function request(path, init = {}) {
   return new Request(`https://site.example${path}`, init);
 }
 
+function canonicalEnv(source = env) {
+  return {
+    ...source,
+    DB: {
+      prepare(sql) {
+        const statement = {
+          bind(...values) { statement.values = values; return statement; },
+          async first() {
+            if (sql.includes("SELECT * FROM auth_users")) return { id: "auth-1", provider: "oauth", subject: "subject", email: "person@example.com", display_name: "Person", is_admin: 1 };
+            return null;
+          },
+          async run() { return { success: true }; },
+        };
+        return statement;
+      },
+      async batch() { return []; },
+    },
+  };
+}
+
 test("shared route contract exposes unauthenticated API behavior", async () => {
   const auth = createAuth({ publicPaths: ["/", "/health", "/api/public/"] });
   const me = await auth.handle(request("/api/me"), env);
@@ -72,6 +92,54 @@ test("valid signed sessions do not throw during authorization", async () => {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
   const auth = createAuth({ publicPaths: ["/"], authorize: () => false });
-  const response = await auth.handle(request("/admin", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), env);
+  const response = await auth.handle(request("/admin", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), canonicalEnv());
   assert.equal(response.status, 403);
+});
+
+test("authenticated sessions hydrate the canonical base auth user", async () => {
+  const statements = [];
+  const envWithDb = {
+    ...env,
+    DB: {
+      prepare(sql) {
+        const statement = {
+          bind(...values) { statement.values = values; return statement; },
+          async first() {
+            if (sql.includes("SELECT * FROM auth_users WHERE provider=?")) return { id: "auth-1", provider: "oauth", subject: "subject", email: "person@example.com", display_name: "Person", is_admin: 1 };
+            return null;
+          },
+          async run() { statements.push({ sql, values: statement.values }); return { success: true }; },
+        };
+        return statement;
+      },
+      async batch(batchStatements) { statements.push(...batchStatements); return []; },
+    },
+  };
+  const payload = btoa(JSON.stringify({ sub: "subject", email: "person@example.com", name: "Person", email_verified: true, auth_strategy: "oauth", exp: Math.floor(Date.now() / 1000) + 300 })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const auth = createAuth({ publicPaths: ["/"] });
+  const user = await auth.getUser(request("/api/me", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), envWithDb);
+  assert.equal(user.authUser.id, "auth-1");
+  assert.equal(user.authUser.is_admin, true);
+  assert.ok(statements.length >= 2);
+});
+
+test("auth registers canonical repositories and exposes a minimal public identity", async () => {
+  const payload = btoa(JSON.stringify({ sub: "subject", email: "person@example.com", name: "Person", exp: Math.floor(Date.now() / 1000) + 300 })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const auth = createAuth({ publicPaths: ["/"] });
+  assert.deepEqual(auth.repositories.map((repository) => repository.name), ["users", "groups"]);
+  const response = await auth.handle(request("/api/me", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), canonicalEnv());
+  assert.deepEqual(await response.json(), { user: { id: "auth-1", email: "person@example.com", name: "Person", isAdmin: true } });
+});
+
+test("sessionAuthorize can revoke an existing session", async () => {
+  const payload = btoa(JSON.stringify({ sub: "subject", exp: Math.floor(Date.now() / 1000) + 300 })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const auth = createAuth({ sessionAuthorize: () => false, publicPaths: ["/"] });
+  const response = await auth.handle(request("/api/private", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), canonicalEnv());
+  assert.equal(response.status, 401);
 });

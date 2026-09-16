@@ -20,6 +20,7 @@
     "src",
     "README.md",
     "CONTRACT.md",
+    "changelog.md",
     "LICENSE"
   ],
   "repository": {
@@ -28,6 +29,6 @@
   },
   "homepage": "https://github.com/agilesyndrome/cf-genai-auth#readme",
   "dependencies": {
-    "@agilesyndrome/cf-genai-base": "^4.1.1"
+    "@agilesyndrome/cf-genai-base": "^5.0.0"
   }
 }
