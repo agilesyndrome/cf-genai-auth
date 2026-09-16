@@ -92,7 +92,9 @@ export function createAuth(options = {}) {
     return redirect(`${url.origin}${decodeReturn(encodedReturn)}`, [cookie(names.session, signed, options.sessionSeconds || 28800), clearCookie(names.state)]);
   }
   async function resolveUser(request, env) {
-    return hydrateUser(await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options), env, options);
+    const user = await hydrateUser(await getUser(request, env, envName("sessionSecret", "AUTH_SESSION_SECRET"), names.session, options), env, options);
+    if (user && options.sessionAuthorize && !(await options.sessionAuthorize({ user, request, env }))) return null;
+    return user;
   }
 
   async function resolveLoginUser(user, env, request) {

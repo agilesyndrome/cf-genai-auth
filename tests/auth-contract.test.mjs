@@ -104,3 +104,12 @@ test("persistUser hydrates the canonical base auth user", async () => {
   assert.equal(user.authUser.is_admin, true);
   assert.ok(statements.length >= 2);
 });
+
+test("sessionAuthorize can revoke an existing session", async () => {
+  const payload = btoa(JSON.stringify({ sub: "subject", exp: Math.floor(Date.now() / 1000) + 300 })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.AUTH_SESSION_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  const auth = createAuth({ sessionAuthorize: () => false, publicPaths: ["/"] });
+  const response = await auth.handle(request("/api/private", { headers: { Cookie: `__Host-cfgenai_session=${payload}.${signature}` } }), env);
+  assert.equal(response.status, 401);
+});

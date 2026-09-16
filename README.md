@@ -41,3 +41,7 @@ Use `loginAuthorize({ user, request, env })` for a policy that must run after a
 new identity has been persisted. This is useful for application circuit
 breakers or enrollment rules. Throw an auth error to reject the login or return
 `false` to receive the standard 403 response.
+
+Use `sessionAuthorize({ user, request, env })` to re-check an existing session
+on each request. Returning `false` makes the session anonymous for that request;
+this is useful for shared feature availability or emergency access policies.

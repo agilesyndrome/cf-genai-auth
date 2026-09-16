@@ -14,6 +14,10 @@ cf-genai-base.
 OIDC callback handling. Return `false` for the standard forbidden response or
 throw an error with a status to reject the login explicitly.
 
+`sessionAuthorize({ user, request, env })` runs after optional persistence for
+existing sessions. Returning `false` causes the request to be treated as
+unauthenticated.
+
 The default session is an HMAC-signed, host-only cookie. This is suitable for small sites and staging isolation. Set `delegateAdmin: true` when the provider is composed with the base admin boundary. Sites requiring revocation, multi-device
 logout, or durable sessions can provide `createSession`, `getSession`, and
 `revokeSession` adapters. The adapter receives the opaque cookie token and owns
